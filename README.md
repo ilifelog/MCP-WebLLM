@@ -176,7 +176,7 @@ mcp-multi-bridge/
 
 以下是从零开始的完整操作流程（以本地文件系统 MCP 服务器 + DeepSeek 为例）：
 
-### 第一步：启动本地 MCP 服务器
+### 第一步：启动本地 MCP 服务器或使用 smithery 平台或魔搭社区的远程 MCP 服务器
 
 本扩展需要一个在本地运行、支持 SSE 或 Streamable HTTP 传输的 MCP Server。你可以使用任意支持 MCP 协议的服务器，例如：
 
