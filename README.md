@@ -30,3 +30,7 @@ ChatGPT, Gemini, DeepSeek, Grok, Perplexity, Google AI Studio, OpenRouter, Mistr
 ## 📄 License
 
 MIT License
+
+## 🤖 Credits
+
+*本项目由 OpenCode + Claude 3.5 Sonnet / Opus 协助开发完成。*
