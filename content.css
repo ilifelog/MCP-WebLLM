@@ -1,0 +1,84 @@
+/* content.css — Minimal host‐page styles for MCP Multi Bridge */
+
+#mcp-multi-bridge-host {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 320px;
+  height: 100vh;
+  z-index: 2147483647;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+#mcp-multi-bridge-toggle {
+  position: fixed;
+  top: 50%;
+  right: 320px;
+  transform: translateY(-50%);
+  z-index: 2147483647;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  padding: 8px 4px;
+  border-radius: 6px 0 0 6px;
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  letter-spacing: 1px;
+  user-select: none;
+  box-shadow: -2px 0 8px rgba(0,0,0,.15);
+  transition: right .2s ease;
+}
+
+#mcp-multi-bridge-toggle:hover {
+  background: #4338ca;
+}
+
+#mcp-multi-bridge-toggle.collapsed {
+  right: 0;
+}
+
+/* Inline indicator injected near code blocks */
+.mcp-inline-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  margin: 4px 0;
+  background: #eef2ff;
+  border: 1px solid #c7d2fe;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.mcp-inline-run {
+  margin-left: auto;
+  padding: 3px 10px;
+  background: #4f46e5;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mcp-inline-run:hover {
+  background: #4338ca;
+}
+
+.mcp-inline-run:disabled {
+  opacity: .6;
+  cursor: default;
+}
+
+.mcp-inline-run.done {
+  background: #16a34a;
+}
+
+.mcp-inline-run.error {
+  background: #dc2626;
+}
