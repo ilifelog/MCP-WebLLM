@@ -228,6 +228,47 @@ body {
   margin-right: 10px;
 }
 
+/* ---- Editable fields in server cards ---- */
+.editable-field {
+  margin-bottom: 4px;
+}
+
+.edit-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-bottom: 1px;
+}
+
+.editable-field input {
+  width: 100%;
+  padding: 4px 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  font-size: 11px;
+  color: #334155;
+  background: #f8fafc;
+  outline: none;
+  transition: border-color .15s, background-color .15s;
+}
+
+.editable-field input:focus {
+  border-color: #4f46e5;
+  background: #fff;
+  box-shadow: 0 0 0 2px rgba(79, 70, 229, .1);
+}
+
+.btn-save {
+  color: #4f46e5;
+  border-color: #a5b4fc;
+  font-weight: 600;
+}
+
+.btn-save:hover {
+  background: #eef2ff;
+}
+
 .server-card-actions {
   display: flex;
   gap: 6px;

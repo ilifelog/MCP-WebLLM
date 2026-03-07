@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "description": "Connect multiple MCP servers to web-based AI assistants (ChatGPT, Gemini, DeepSeek, Grok, etc.)",
   "permissions": [
-    "storage"
+    "storage",
+    "nativeMessaging"
   ],
   "host_permissions": [
     "<all_urls>"

@@ -54,6 +54,7 @@ class MCPConnection {
     this.tools = [];
     this.pendingRequests = new Map(); // id -> { resolve, reject, timer }
     this.abortController = null;
+    this.nativePort = null; // for stdio transport
     this.connected = false;
   }
 
@@ -61,6 +62,8 @@ class MCPConnection {
   async connect() {
     if (this.config.transport === 'streamable-http') {
       await this.connectStreamableHTTP();
+    } else if (this.config.transport === 'stdio') {
+      await this.connectStdio();
     } else {
       await this.connectSSE();
     }
@@ -125,6 +128,77 @@ class MCPConnection {
     }
   }
 
+  async connectStdio() {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Timeout waiting for native host to spawn process'));
+      }, 30000);
+
+      try {
+        this.nativePort = chrome.runtime.connectNative('com.mcp.bridge');
+      } catch (e) {
+        clearTimeout(timeout);
+        reject(new Error('Failed to connect native host: ' + e.message));
+        return;
+      }
+
+      this.nativePort.onMessage.addListener((msg) => {
+        if (msg.type === 'spawned') {
+          clearTimeout(timeout);
+          this.connected = true;
+          // After spawn confirmed, initialize MCP
+          this.initialize()
+            .then(() => this.refreshTools())
+            .then(() => resolve())
+            .catch((e) => {
+              this.connected = false;
+              reject(e);
+            });
+        } else if (msg.type === 'stdout') {
+          // Parse JSON-RPC message from child process stdout
+          try {
+            const rpcMsg = JSON.parse(msg.data);
+            this.handleResponse(rpcMsg);
+          } catch (_) {
+            // Not valid JSON-RPC, ignore (e.g. startup logs)
+          }
+        } else if (msg.type === 'error') {
+          console.error('[MCP] Native host error:', msg.error);
+          // If we haven't connected yet, reject
+          if (!this.connected) {
+            clearTimeout(timeout);
+            reject(new Error(msg.error));
+          }
+        } else if (msg.type === 'closed') {
+          console.log('[MCP] Child process closed with code:', msg.code);
+          this.connected = false;
+        }
+      });
+
+      this.nativePort.onDisconnect.addListener(() => {
+        this.connected = false;
+        const err = chrome.runtime.lastError;
+        if (err) {
+          console.error('[MCP] Native port disconnected:', err.message);
+          if (!this.connected) {
+            clearTimeout(timeout);
+            reject(new Error('Native host disconnected: ' + err.message));
+          }
+        }
+      });
+
+      // Send spawn command
+      const args = this.config.args
+        ? (typeof this.config.args === 'string' ? this.config.args.split(/\s+/) : this.config.args)
+        : [];
+      this.nativePort.postMessage({
+        action: 'spawn',
+        command: this.config.command || 'npx',
+        args: args,
+      });
+    });
+  }
+
   // ---- SSE event handler ----
   handleSSEEvent(event) {
     if (event.type === 'endpoint') {
@@ -158,11 +232,31 @@ class MCPConnection {
     const id = nextRequestId++;
     const body = JSON.stringify({ jsonrpc: '2.0', method, params, id });
 
-    if (this.config.transport === 'sse') {
+    if (this.config.transport === 'stdio') {
+      return this._sendStdio(id, body);
+    } else if (this.config.transport === 'sse') {
       return this._sendSSE(id, body);
     } else {
       return this._sendStreamableHTTP(id, body);
     }
+  }
+
+  _sendStdio(id, body) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error('Request timeout (30 s)'));
+      }, 30000);
+      this.pendingRequests.set(id, { resolve, reject, timer });
+
+      try {
+        this.nativePort.postMessage({ action: 'send', data: body });
+      } catch (e) {
+        clearTimeout(timer);
+        this.pendingRequests.delete(id);
+        reject(new Error('Failed to send via native port: ' + e.message));
+      }
+    });
   }
 
   _sendSSE(id, body) {
@@ -247,14 +341,21 @@ class MCPConnection {
       clientInfo: { name: 'MCP-Multi-Bridge', version: '1.0.0' },
     });
 
-    // Send notifications/initialized
-    const headers = { 'Content-Type': 'application/json' };
-    if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
-    await fetch(this.messageEndpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
-    });
+    // Send notifications/initialized — must use the correct transport
+    const notifBody = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    if (this.config.transport === 'stdio') {
+      // Send via native messaging port
+      this.nativePort.postMessage({ action: 'send', data: notifBody });
+    } else {
+      // Send via HTTP (SSE / Streamable HTTP)
+      const headers = { 'Content-Type': 'application/json' };
+      if (this.sessionId) headers['Mcp-Session-Id'] = this.sessionId;
+      await fetch(this.messageEndpoint, {
+        method: 'POST',
+        headers,
+        body: notifBody,
+      });
+    }
 
     return result;
   }
@@ -271,6 +372,11 @@ class MCPConnection {
 
   disconnect() {
     if (this.abortController) this.abortController.abort();
+    if (this.nativePort) {
+      try { this.nativePort.postMessage({ action: 'kill' }); } catch (_) { }
+      try { this.nativePort.disconnect(); } catch (_) { }
+      this.nativePort = null;
+    }
     for (const { timer } of this.pendingRequests.values()) clearTimeout(timer);
     this.pendingRequests.clear();
     this.connected = false;
@@ -366,7 +472,7 @@ const manager = new ServerManager();
 
 // ===================== Broadcast helper =====================
 function broadcast(type, payload) {
-  chrome.runtime.sendMessage({ type, ...payload }).catch(() => {});
+  chrome.runtime.sendMessage({ type, ...payload }).catch(() => { });
 }
 
 // ===================== Message handler =====================
@@ -395,14 +501,19 @@ async function handleMessage(msg) {
       const srv = {
         id: crypto.randomUUID(),
         name: msg.name,
-        url: msg.url,
+        url: msg.url || '',
         transport: msg.transport || 'sse',
         enabled: true,
       };
+      // stdio-specific fields
+      if (msg.transport === 'stdio') {
+        srv.command = msg.command || 'npx';
+        srv.args = msg.args || '';
+      }
       configs.push(srv);
       await saveServerConfigs(configs);
       // auto‐connect
-      try { await manager.connectServer(srv); } catch (_) {}
+      try { await manager.connectServer(srv); } catch (_) { }
       return srv;
     }
 
@@ -421,7 +532,7 @@ async function handleMessage(msg) {
       await saveServerConfigs(configs);
       manager.disconnectServer(msg.server.id);
       if (configs[idx].enabled) {
-        try { await manager.connectServer(configs[idx]); } catch (_) {}
+        try { await manager.connectServer(configs[idx]); } catch (_) { }
       }
       return { success: true };
     }
@@ -433,7 +544,7 @@ async function handleMessage(msg) {
       cfg.enabled = msg.enabled;
       await saveServerConfigs(configs);
       if (cfg.enabled) {
-        try { await manager.connectServer(cfg); } catch (_) {}
+        try { await manager.connectServer(cfg); } catch (_) { }
       } else {
         manager.disconnectServer(cfg.id);
       }
@@ -473,7 +584,7 @@ async function handleMessage(msg) {
 // A connected port from content scripts keeps the service worker alive
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'keepalive') {
-    port.onDisconnect.addListener(() => {});
+    port.onDisconnect.addListener(() => { });
   }
 });
 
