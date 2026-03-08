@@ -82,6 +82,10 @@
   let sidebarVisible = false;
   let darkMode = false;
   const processedBlocks = new WeakMap(); // element → 已处理的调用数量（支持流式增量检测）
+  // Gemini 专用：基于内容签名的去重集合
+  // Gemini 在流式输出时会销毁并重建 <code> 元素，导致 WeakMap 丢失引用
+  // 通过 name+callId+params 生成唯一签名来避免重复检测
+  const processedCallSignatures = new Set();
 
   // ==================== 批量执行状态 ====================
   // 当同一批检测到多个工具调用时，收集所有结果后再统一注入+发送
@@ -199,6 +203,8 @@
     clearTimeout(sendRetryTimer);
     sendRetryTimer = null;
     accumulatedResults = [];
+    // Gemini: 清空签名去重集合，新会话重新开始
+    processedCallSignatures.clear();
   }
 
   // ==================== 侧边栏创建 ====================
@@ -609,6 +615,14 @@
         const newCalls = calls.slice(alreadyProcessed);
         processedBlocks.set(block, calls.length);
         for (const call of newCalls) {
+          // Gemini 专用：基于内容签名的去重
+          // Gemini 流式输出时会销毁并重建 <code> DOM 元素，导致 WeakMap 丢失引用，
+          // 同一个工具调用会被当作"新"调用重复检测。通过签名去重来解决。
+          if (PLATFORM === 'gemini') {
+            const sig = `${call.name}|${call.callId}|${JSON.stringify(call.params)}`;
+            if (processedCallSignatures.has(sig)) continue;
+            processedCallSignatures.add(sig);
+          }
           addToolCallCard(call, block);
         }
       }
@@ -637,7 +651,7 @@
         } else if (obj.type === 'parameter' && current) {
           let val = obj.value;
           if (typeof val === 'string') {
-            try { val = JSON.parse(val); } catch (_) {}
+            try { val = JSON.parse(val); } catch (_) { }
           }
           current.params[obj.key] = val;
         } else if (obj.type === 'function_call_end' && current) {
@@ -673,8 +687,8 @@
         ${call.description ? `<div class="mcp-call-desc">${esc(call.description)}</div>` : ''}
         <div class="mcp-call-params">
           ${Object.entries(call.params).map(([k, v]) =>
-            `<div class="mcp-param"><span class="mcp-param-key">${esc(k)}:</span> <span class="mcp-param-val">${esc(stringify(v))}</span></div>`
-          ).join('')}
+        `<div class="mcp-param"><span class="mcp-param-key">${esc(k)}:</span> <span class="mcp-param-val">${esc(stringify(v))}</span></div>`
+      ).join('')}
         </div>
         <div class="mcp-call-actions">
           <button class="mcp-btn mcp-btn-run" data-card="${cardId}">执行</button>
@@ -1461,12 +1475,12 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
     // For Gemini, try clicking the upload/attachment button to create the file input
     if (PLATFORM === 'gemini') {
       const uploadBtn = document.querySelector('button[aria-label*="upload" i]') ||
-                        document.querySelector('button[aria-label*="attach" i]') ||
-                        document.querySelector('button[aria-label*="file" i]') ||
-                        document.querySelector('button[data-tooltip*="upload" i]') ||
-                        document.querySelector('button[data-tooltip*="attach" i]') ||
-                        document.querySelector('[class*="upload" i] button') ||
-                        document.querySelector('[class*="attach" i] button');
+        document.querySelector('button[aria-label*="attach" i]') ||
+        document.querySelector('button[aria-label*="file" i]') ||
+        document.querySelector('button[data-tooltip*="upload" i]') ||
+        document.querySelector('button[data-tooltip*="attach" i]') ||
+        document.querySelector('[class*="upload" i] button') ||
+        document.querySelector('[class*="attach" i] button');
       if (uploadBtn) {
         uploadBtn.click();
         // Wait for the file input to appear in DOM
@@ -1482,11 +1496,11 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
     // For ChatGPT, try clicking the upload/attachment button to create the file input
     if (PLATFORM === 'chatgpt') {
       const uploadBtn = document.querySelector('button[data-testid="composer-action-file-upload"]') ||
-                        document.querySelector('#upload-file-btn') ||
-                        document.querySelector('button[aria-label*="Attach" i]') ||
-                        document.querySelector('button[aria-label*="Add photos" i]') ||
-                        document.querySelector('button[aria-label*="upload" i]') ||
-                        document.querySelector('button[aria-label*="file" i]');
+        document.querySelector('#upload-file-btn') ||
+        document.querySelector('button[aria-label*="Attach" i]') ||
+        document.querySelector('button[aria-label*="Add photos" i]') ||
+        document.querySelector('button[aria-label*="upload" i]') ||
+        document.querySelector('button[aria-label*="file" i]');
       if (uploadBtn) {
         uploadBtn.click();
         // Wait for the file input to appear in DOM
@@ -1494,7 +1508,7 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
         while (Date.now() - start < maxWait) {
           await new Promise((r) => setTimeout(r, 200));
           input = document.querySelector('input[type="file"][multiple]') ||
-                  document.querySelector('input[type="file"]');
+            document.querySelector('input[type="file"]');
           if (input) return input;
         }
       }
@@ -1507,8 +1521,8 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
     switch (PLATFORM) {
       case 'chatgpt':
         return document.querySelector('input[type="file"][multiple]') ||
-               document.querySelector('input[type="file"][accept*="*"]') ||
-               document.querySelector('input[type="file"]');
+          document.querySelector('input[type="file"][accept*="*"]') ||
+          document.querySelector('input[type="file"]');
       case 'gemini':
         return document.querySelector('input[type="file"]');
       case 'deepseek':
@@ -1544,60 +1558,60 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
     switch (PLATFORM) {
       case 'chatgpt':
         return document.querySelector('#prompt-textarea') ||
-               document.querySelector('.ProseMirror') ||
-               document.querySelector('[data-testid="composer-text-input"]') ||
-               document.querySelector('.composer-parent') ||
-               document.querySelector('div[contenteditable="true"]')?.closest('form') ||
-               document.querySelector('main');
+          document.querySelector('.ProseMirror') ||
+          document.querySelector('[data-testid="composer-text-input"]') ||
+          document.querySelector('.composer-parent') ||
+          document.querySelector('div[contenteditable="true"]')?.closest('form') ||
+          document.querySelector('main');
       case 'gemini':
         return document.querySelector('div[xapfileselectordropzone]') ||
-               document.querySelector('.text-input-field') ||
-               document.querySelector('.input-area') ||
-               document.querySelector('.ql-editor') ||
-               document.querySelector('.input-area-container') ||
-               document.querySelector('div[contenteditable="true"]')?.parentElement;
+          document.querySelector('.text-input-field') ||
+          document.querySelector('.input-area') ||
+          document.querySelector('.ql-editor') ||
+          document.querySelector('.input-area-container') ||
+          document.querySelector('div[contenteditable="true"]')?.parentElement;
       case 'deepseek':
         return document.querySelector('textarea#chat-input')?.closest('div[class*="input"]') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'grok':
         return document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'perplexity':
         return document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'aistudio':
         return document.querySelector('textarea')?.closest('div') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'openrouter':
         return document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'mistral':
         return document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'kimi':
         return document.querySelector('div[contenteditable="true"]')?.parentElement;
       case 'qwen':
         return document.querySelector('textarea#chat-input')?.closest('form') ||
-               document.querySelector('textarea#chat-input')?.parentElement ||
-               document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea#chat-input')?.parentElement ||
+          document.querySelector('textarea')?.closest('form') ||
+          document.querySelector('textarea')?.parentElement;
       case 'chatglm':
         return document.querySelector('div[contenteditable="true"]')?.parentElement ||
-               document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.closest('form') ||
+          document.querySelector('textarea')?.parentElement;
       case 't3':
         return document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'copilot':
         return document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.parentElement;
       case 'doubao':
         return document.querySelector('div[contenteditable="true"]')?.parentElement ||
-               document.querySelector('textarea')?.closest('form') ||
-               document.querySelector('textarea')?.parentElement;
+          document.querySelector('textarea')?.closest('form') ||
+          document.querySelector('textarea')?.parentElement;
       default:
         return document.querySelector('textarea')?.parentElement ||
-               document.querySelector('div[contenteditable="true"]')?.parentElement;
+          document.querySelector('div[contenteditable="true"]')?.parentElement;
     }
   }
 
@@ -1606,50 +1620,50 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
     switch (PLATFORM) {
       case 'chatgpt':
         return document.querySelector('#prompt-textarea') ||
-               document.querySelector('.ProseMirror[contenteditable="true"]') ||
-               document.querySelector('div[contenteditable="true"][data-id*="prompt"]') ||
-               document.querySelector('div[contenteditable="true"]') ||
-               document.querySelector('textarea');
+          document.querySelector('.ProseMirror[contenteditable="true"]') ||
+          document.querySelector('div[contenteditable="true"][data-id*="prompt"]') ||
+          document.querySelector('div[contenteditable="true"]') ||
+          document.querySelector('textarea');
       case 'deepseek':
         return document.querySelector('textarea#chat-input') ||
-               document.querySelector('textarea');
+          document.querySelector('textarea');
       case 'gemini':
         return document.querySelector('div.ql-editor.textarea p') ||
-               document.querySelector('div.ql-editor.textarea') ||
-               document.querySelector('.ql-editor p') ||
-               document.querySelector('.ql-editor') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('div.ql-editor.textarea') ||
+          document.querySelector('.ql-editor p') ||
+          document.querySelector('.ql-editor') ||
+          document.querySelector('div[contenteditable="true"]');
       case 'grok':
         return document.querySelector('textarea') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('div[contenteditable="true"]');
       case 'perplexity':
         return document.querySelector('textarea') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('div[contenteditable="true"]');
       case 'aistudio':
         return document.querySelector('textarea') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('div[contenteditable="true"]');
       case 'openrouter':
         return document.querySelector('textarea') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('div[contenteditable="true"]');
       case 'mistral':
         return document.querySelector('textarea') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('div[contenteditable="true"]');
       case 'kimi':
         return document.querySelector('div[contenteditable="true"]') ||
-               document.querySelector('textarea');
+          document.querySelector('textarea');
       case 'qwen':
         return document.querySelector('textarea#chat-input') ||
-               document.querySelector('textarea') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('textarea') ||
+          document.querySelector('div[contenteditable="true"]');
       case 'chatglm':
         return document.querySelector('div[contenteditable="true"]') ||
-               document.querySelector('textarea');
+          document.querySelector('textarea');
       case 'doubao':
         return document.querySelector('div[contenteditable="true"]') ||
-               document.querySelector('textarea');
+          document.querySelector('textarea');
       default:
         return document.querySelector('textarea') ||
-               document.querySelector('div[contenteditable="true"]');
+          document.querySelector('div[contenteditable="true"]');
     }
   }
 
