@@ -19,7 +19,6 @@
     if (h.includes('grok.com')) return 'grok';
     if (h.includes('perplexity.ai')) return 'perplexity';
     if (h.includes('aistudio.google.com')) return 'aistudio';
-    if (h.includes('openrouter.ai')) return 'openrouter';
     if (h.includes('chat.mistral.ai')) return 'mistral';
     if (h.includes('kimi.com') || h.includes('kimi.moonshot.cn')) return 'kimi';
     if (h.includes('t3.chat')) return 't3';
@@ -28,6 +27,11 @@
     if (h.includes('github.com')) return 'copilot';
     if (h.includes('doubao.com')) return 'doubao';
     return 'unknown';
+  }
+
+  // 判断当前平台是否使用拖放注入方式（仅 Gemini）
+  function usesDragDropInjection() {
+    return PLATFORM === 'gemini';
   }
 
   // ==================== 保活端口 ====================
@@ -104,7 +108,7 @@
   let geminiDragDropReady = null; // Promise that resolves when script is loaded
 
   function injectGeminiDragDropListener() {
-    if (PLATFORM !== 'gemini') return Promise.resolve(false);
+    if (!usesDragDropInjection()) return Promise.resolve(false);
     if (geminiDragDropInjected && geminiDragDropReady) return geminiDragDropReady;
     geminiDragDropReady = new Promise((resolve) => {
       try {
@@ -146,20 +150,21 @@
         const safeType = file.type === 'text/markdown' ? 'text/plain' : file.type;
         window.postMessage({
           type: 'MCP_DROP_FILE',
+          platform: PLATFORM,
           fileName: file.name,
           fileType: safeType,
           fileSize: file.size,
           lastModified: file.lastModified,
           fileData: reader.result, // base64 data URL
         }, '*');
-        // 给 Gemini 时间处理拖放事件，然后检查文件预览元素
-        setTimeout(() => {
-          const preview = document.querySelector('.file-preview, .xap-filed-upload-preview, .attachment-preview');
-          if (preview) {
-            console.log('[MCP] Gemini 文件预览已出现，附件成功');
-          } else {
-            console.warn('[MCP] Gemini 文件预览未出现，但仍视为成功（乐观模式）');
-          }
+        // 给平台时间处理拖放事件，然后检查文件预览元素
+            setTimeout(() => {
+              const preview = document.querySelector('.file-preview, .xap-filed-upload-preview, .attachment-preview');
+              if (preview) {
+                console.log('[MCP] 文件预览已出现，附件成功');
+              } else {
+                console.warn('[MCP] 文件预览未出现，但仍视为成功（乐观模式）');
+              }
           resolve(true);
         }, 800);
       };
@@ -615,15 +620,58 @@
         const newCalls = calls.slice(alreadyProcessed);
         processedBlocks.set(block, calls.length);
         for (const call of newCalls) {
-          // Gemini 专用：基于内容签名的去重
-          // Gemini 流式输出时会销毁并重建 <code> DOM 元素，导致 WeakMap 丢失引用，
-          // 同一个工具调用会被当作"新"调用重复检测。通过签名去重来解决。
-          if (PLATFORM === 'gemini') {
+          // 基于内容签名的去重（Gemini + ChatGPT）
+          // Gemini 流式输出时会销毁并重建 <code> DOM 元素，导致 WeakMap 丢失引用；
+          // ChatGPT 辅助扫描可能与代码块扫描重复检测同一个调用。
+          // 通过 name+callId+params 生成唯一签名来避免重复检测。
+          if (PLATFORM === 'gemini' || PLATFORM === 'chatgpt') {
             const sig = `${call.name}|${call.callId}|${JSON.stringify(call.params)}`;
             if (processedCallSignatures.has(sig)) continue;
             processedCallSignatures.add(sig);
           }
           addToolCallCard(call, block);
+        }
+      }
+    }
+
+    // ChatGPT 辅助扫描：扫描助手消息容器元素
+    // 当 ChatGPT 不使用标准 <pre><code> 渲染代码块时（如新版 DOM 结构），
+    // 或当 LLM 将 JSON 输出为纯文本时，代码块扫描可能遗漏工具调用。
+    // 此辅助扫描直接检查助手消息的完整文本内容。
+    if (PLATFORM === 'chatgpt') {
+      const messageEls = document.querySelectorAll(
+        '[data-message-author-role="assistant"]'
+      );
+      // 仅扫描最近的几条消息，避免性能问题
+      const recent = Array.from(messageEls).slice(-5);
+      for (const el of recent) {
+        const text = el.textContent || '';
+        if (!text.includes('function_call_start') || !text.includes('function_call_end')) continue;
+
+        // 如果该消息内的代码块已被主扫描检测到，跳过（避免重复）
+        const childCodeBlocks = el.querySelectorAll('pre code, pre, code');
+        let childAlreadyDetected = false;
+        for (const cb of childCodeBlocks) {
+          if (processedBlocks.has(cb) && processedBlocks.get(cb) > 0) {
+            childAlreadyDetected = true;
+            break;
+          }
+        }
+        if (childAlreadyDetected) continue;
+
+        const calls = parseToolCalls(text);
+        const alreadyProcessed = processedBlocks.get(el) || 0;
+
+        if (calls.length > alreadyProcessed) {
+          const newCalls = calls.slice(alreadyProcessed);
+          processedBlocks.set(el, calls.length);
+          for (const call of newCalls) {
+            // 签名去重（与代码块扫描共享同一个签名集合）
+            const sig = `${call.name}|${call.callId}|${JSON.stringify(call.params)}`;
+            if (processedCallSignatures.has(sig)) continue;
+            processedCallSignatures.add(sig);
+            addToolCallCard(call, el);
+          }
         }
       }
     }
@@ -634,6 +682,7 @@
     const lines = text.split('\n');
     let current = null;
 
+    // 策略 1: JSONL 格式（每行一个 JSON 对象）— 原始方式
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
@@ -662,7 +711,86 @@
         // 非 JSON，跳过
       }
     }
+
+    // 策略 2: 多行 JSON 格式（ChatGPT 等 LLM 可能将 JSON 美化输出）
+    // 如果策略 1 未找到任何调用，尝试提取多行 JSON 对象
+    if (calls.length === 0 && text.includes('function_call_start')) {
+      const jsonObjects = extractJsonObjects(text);
+      current = null;
+      for (const obj of jsonObjects) {
+        if (obj.type === 'function_call_start') {
+          current = {
+            name: obj.name,
+            callId: obj.call_id,
+            description: '',
+            params: {},
+          };
+        } else if (obj.type === 'description' && current) {
+          current.description = obj.text || '';
+        } else if (obj.type === 'parameter' && current) {
+          let val = obj.value;
+          if (typeof val === 'string') {
+            try { val = JSON.parse(val); } catch (_) { }
+          }
+          current.params[obj.key] = val;
+        } else if (obj.type === 'function_call_end' && current) {
+          calls.push(current);
+          current = null;
+        }
+      }
+    }
+
     return calls;
+  }
+
+  // 从文本中提取所有 JSON 对象，支持多行美化格式
+  // 使用状态机正确处理字符串内的花括号
+  function extractJsonObjects(text) {
+    const objects = [];
+    let depth = 0;
+    let start = -1;
+    let inString = false;
+    let escaped = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+
+      if (ch === '\\' && inString) {
+        escaped = true;
+        continue;
+      }
+
+      if (ch === '"') {
+        inString = !inString;
+        continue;
+      }
+
+      if (inString) continue;
+
+      if (ch === '{') {
+        if (depth === 0) start = i;
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+        if (depth === 0 && start >= 0) {
+          const jsonStr = text.substring(start, i + 1);
+          try {
+            const obj = JSON.parse(jsonStr);
+            if (obj && typeof obj === 'object' && obj.type) {
+              objects.push(obj);
+            }
+          } catch (_) { /* 忽略无效 JSON */ }
+          start = -1;
+        }
+      }
+    }
+
+    return objects;
   }
 
   // ==================== 工具调用卡片 ====================
@@ -956,14 +1084,13 @@
 
     let attached = false;
 
-    // Gemini 专用路径：直接走 dragDropListener.js postMessage 机制
-    // 不能使用 fileInput 策略（会弹出系统文件选择框）
+    // Gemini 专用路径：直接走 dragDropListener.js postMessage 机制（Gemini 不支持 fileInput）
     if (!attached && PLATFORM === 'gemini') {
       try {
         attached = await geminiDropFile(file);
-        if (attached) console.log('[MCP] 批量结果通过 Gemini 拖放注入成功');
+        if (attached) console.log('[MCP] 批量结果通过拖放注入成功');
       } catch (e) {
-        console.warn('[MCP] 批量结果 Gemini 拖放注入失败:', e);
+        console.warn('[MCP] 批量结果拖放注入失败:', e);
       }
     }
 
@@ -1089,14 +1216,13 @@
 
     let attached = false;
 
-    // Gemini 专用路径：直接走 dragDropListener.js postMessage 机制
-    // 不能使用 fileInput 策略（会弹出系统文件选择框）
+    // Gemini 专用路径：直接走 dragDropListener.js postMessage 机制（Gemini 不支持 fileInput）
     if (!attached && PLATFORM === 'gemini') {
       try {
         attached = await geminiDropFile(file);
-        if (attached) console.log('[MCP] 结果通过 Gemini 拖放注入成功');
+        if (attached) console.log('[MCP] 结果通过拖放注入成功');
       } catch (e) {
-        console.warn('[MCP] 结果 Gemini 拖放注入失败:', e);
+        console.warn('[MCP] 结果拖放注入失败:', e);
       }
     }
 
@@ -1346,6 +1472,7 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
   // ==================== .md 文件附加 ====================
   function createMCPPromptFile() {
     const prompt = generateMCPPrompt();
+    // Gemini 仅接受 text/plain，其他平台用 text/markdown
     const fileMimeType = PLATFORM === 'gemini' ? 'text/plain' : 'text/markdown';
     return new File([prompt], 'mcp-tools.md', { type: fileMimeType, lastModified: Date.now() });
   }
@@ -1358,16 +1485,16 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
 
     const file = createMCPPromptFile();
 
-    // Gemini 专用路径：直接走 dragDropListener.js postMessage 机制
+    // Gemini 专用路径：直接走 dragDropListener.js postMessage 机制（Gemini 不支持 fileInput）
     if (PLATFORM === 'gemini') {
       try {
         const success = await geminiDropFile(file);
         if (success) {
-          showNotification('MCP 提示词文件已通过 Gemini 拖放附加。');
+          showNotification('MCP 提示词文件已通过拖放附加。');
           return;
         }
       } catch (e) {
-        console.warn('[MCP] Gemini 提示词文件拖放注入失败:', e);
+        console.warn('[MCP] 提示词文件拖放注入失败:', e);
       }
     }
 
@@ -1466,7 +1593,7 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
 
   // ==================== 平台文件输入 / 拖放区域辅助 ====================
 
-  // Gemini-specific: click the upload button to trigger file input creation, then find it
+   // Gemini-specific: click the upload button to trigger file input creation, then find it
   async function findFileInputWithRetry(maxWait = 3000) {
     // Try existing file input first
     let input = findFileInput();
@@ -1533,8 +1660,6 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
         return document.querySelector('input[type="file"]');
       case 'aistudio':
         return document.querySelector('input[type="file"]');
-      case 'openrouter':
-        return document.querySelector('input[type="file"]');
       case 'mistral':
         return document.querySelector('input[type="file"]');
       case 'kimi':
@@ -1581,9 +1706,6 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
           document.querySelector('textarea')?.parentElement;
       case 'aistudio':
         return document.querySelector('textarea')?.closest('div') ||
-          document.querySelector('textarea')?.parentElement;
-      case 'openrouter':
-        return document.querySelector('textarea')?.closest('form') ||
           document.querySelector('textarea')?.parentElement;
       case 'mistral':
         return document.querySelector('textarea')?.closest('form') ||
@@ -1640,9 +1762,6 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
         return document.querySelector('textarea') ||
           document.querySelector('div[contenteditable="true"]');
       case 'aistudio':
-        return document.querySelector('textarea') ||
-          document.querySelector('div[contenteditable="true"]');
-      case 'openrouter':
         return document.querySelector('textarea') ||
           document.querySelector('div[contenteditable="true"]');
       case 'mistral':
@@ -1922,7 +2041,7 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
       lastModified: Date.now(),
     });
 
-    // Gemini 专用路径：直接走 dragDropListener.js
+    // Gemini 专用路径：直接走 dragDropListener.js（Gemini 不支持 fileInput）
     if (PLATFORM === 'gemini') {
       try {
         const success = await geminiDropFile(file);
@@ -1931,11 +2050,11 @@ IMPORTANT: Function calls must be placed in a proper \`\`\`jsonl\`\`\` code bloc
           return;
         }
       } catch (err) {
-        console.warn('[MCP] 粘贴拦截：Gemini 拖放注入失败:', err);
+        console.warn('[MCP] 粘贴拦截：拖放注入失败:', err);
       }
     }
 
-    // 尝试通过文件输入注入（非 Gemini）
+    // 尝试通过文件输入注入（非 Gemini 平台）
     if (PLATFORM !== 'gemini') {
       const fileInput = findFileInput();
       if (fileInput) {

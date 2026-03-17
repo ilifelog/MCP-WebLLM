@@ -23,7 +23,6 @@
         "https://grok.com/*",
         "https://www.perplexity.ai/*",
         "https://aistudio.google.com/*",
-        "https://openrouter.ai/*",
         "https://chat.mistral.ai/*",
         "https://t3.chat/*",
         "https://chat.qwen.ai/*",

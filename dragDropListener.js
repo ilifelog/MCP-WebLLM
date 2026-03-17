@@ -17,7 +17,9 @@
       document.querySelector('div[xapfileselectordropzone]') ||
       document.querySelector('.text-input-field') ||
       document.querySelector('.input-area') ||
-      document.querySelector('.ql-editor');
+      document.querySelector('.ql-editor') ||
+      document.querySelector('div[contenteditable="true"]')?.parentElement;
+
     if (!dropZone) {
       console.error('[MCP] dragDropListener: drop zone not found');
       return;
